@@ -1,11 +1,14 @@
+{-# LANGUAGE InstanceSigs #-}
 module Simulator where
 
 import Binary
-import Data.Array
+import qualified Data.Map as M
 
 import qualified Control.Monad.State as ST
 
-data Wire = Wire { w :: Binary }
+import Data.Default
+
+newtype Wire a = Wire { w :: a }
 
 data DFF a = DFF { d :: a, q :: a}
 
@@ -14,12 +17,19 @@ data Reg a = Reg {
     we :: Bool
 }
 
+instance Default a => Default (Reg a) where
+    def :: Reg a
+    def = Reg { dff = DFF {d = def, q = def}, we = False }
+
+type MachWord = Bin16
+type MachAddr = Bin8
+
 data RAM = RAM { 
-    mem :: Array Int (Reg Binary), 
+    mem :: M.Map MachAddr (Reg MachWord), 
     memWE :: Bool,
-    memAddr :: Wire,
-    memIn :: Wire,
-    memOut :: Wire
+    memAddr :: Wire MachAddr,
+    memIn :: Wire MachWord,
+    memOut :: Wire MachWord
 }
 
 data Opcode =
@@ -32,22 +42,50 @@ data Opcode =
             | Add
             | Sub
             | Mul
-            | Out
+            | Out deriving Eq
 
-type Arg = Binary
-data Insn = Insn Opcode Arg
+type Arg = Bin8
+data MachInsn = MachInsn Opcode Arg | NOP
+
+data Program = Program {
+    assocs :: [(MachAddr, MachWord)],
+    start :: MachAddr,
+    end :: MachAddr
+}
 
 data CPU = CPU {
-    pc :: Reg Binary,
-    ac :: Reg Binary,
-    ir :: Reg Insn
+    pc :: Reg MachAddr,
+    ac :: Reg MachWord,
+    ir :: Reg MachInsn
 }
 
 data S = S {
     ram :: RAM,
     cpu :: CPU,
-    prev :: S
+    prev :: Maybe S
 }
+
+type Word = Bin16
+
+initState :: Program -> S
+initState p = S {
+    ram = RAM {
+        mem = M.fromAscList ((fmap . fmap) regOfVal (assocs p)),
+        memWE = False,
+        memAddr = Wire 0,
+        memIn = Wire 0,
+        memOut = Wire 0
+    },
+    cpu = CPU {
+        pc = regOfVal (start p),
+        ac = regOfVal 0,
+        ir = regOfVal NOP
+    },
+    prev = Nothing
+}
+    where
+        regOfVal :: a -> Reg a
+        regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False}
 
 regIn :: Reg a -> a
 regIn = d . dff
@@ -57,12 +95,6 @@ regOut = q . dff
 
 setReg :: a -> Reg a -> Reg a
 setReg a r = r { dff = (dff r) {d = a}, we = True}
-
-setReg8 :: Binary -> Reg Binary -> Reg Binary
-setReg8 = setReg . resizeS 8
-
-setReg16 :: Binary -> Reg Binary -> Reg Binary
-setReg16 = setReg . resizeS 16
 
 tickDFF :: DFF a -> DFF a
 tickDFF DFF {d = d, q = q} = DFF {d = d, q = d}
@@ -103,7 +135,7 @@ tickMem =
                 m = tickReg <$> mem r
                 m' = assign16 (w $ memAddr r) (w $ memIn r) m
             in
-                r {mem = m'}
+                r {mem = m', memOut = Wire $ proj16 (w $ memAddr r) m'}
         | otherwise =
             let 
                 m = tickReg <$> mem r
@@ -111,17 +143,13 @@ tickMem =
             in 
                 r {mem = m, memOut = o}
 
-    proj16 :: (Ix a, Integral a) => Binary -> Array a (Reg Binary) -> Binary
-    proj16 addr memory = (resizeS 16 . d . dff) $ memory ! toNum (resizeS 8 addr)
+    proj16 :: (Ord a, Default b) => a -> M.Map a (Reg b) -> b
+    proj16 addr memory = (d . dff) $ M.findWithDefault def addr memory
 
-    assign16 :: (Ix a, Integral a) => Binary -> Binary -> Array a (Reg Binary) -> Array a (Reg Binary)
-    assign16 addr v memory = 
-        let 
-            idx = toNum (resizeS 8 addr)
-            reg = memory ! idx
-            value = resizeS 16 v
-        in 
-            memory // [(idx, setReg16 value reg)]
+    assign16 :: (Ord a, Default b) => a -> b -> M.Map a (Reg b) -> M.Map a (Reg b)
+    assign16 addr v memory =
+        let reg = M.findWithDefault Reg {dff = DFF {d = def, q = def}, we = False } addr memory in
+            M.insert addr (setReg v reg) memory
 
 tick :: ST.State S ()
 tick = tickRegs >> tickMem
@@ -141,8 +169,8 @@ fetch = T $ do
     curr <- ST.gets (q . dff . pc . cpu)
 
     ST.put s {
-        cpu = c { pc = setReg (resizeS 8 $ curr !+ one) (pc c)},
-        ram = r { memAddr = Wire (resizeS 8 curr) }
+        cpu = c { pc = setReg (curr + 1) (pc c)},
+        ram = r { memAddr = Wire curr }
     }
 
     return decode
@@ -161,12 +189,12 @@ decode = T $ do
 
     ST.put s {
         cpu = c { ir = setReg insn reg },
-        ram = r { memAddr = Wire $ resizeS 8 i}
+        ram = r { memAddr = Wire $ trim8 i}
     }
     return execute
 
     where
-        readInsn :: Binary -> Insn
+        readInsn :: MachWord -> MachInsn
         readInsn = undefined
 
 execute :: Transition S
@@ -182,33 +210,34 @@ execute = T $ do
     insn <- ST.gets (regOut . ir . cpu)
 
     case insn of
-        Insn Load a ->
-            ST.put s { cpu = c {ac = setReg16 memData acreg}} >> return fetch
-        Insn Store a -> do
+        NOP -> return fetch
+        MachInsn Load a ->
+            ST.put s { cpu = c {ac = setReg memData acreg}} >> return fetch
+        MachInsn Store a -> do
             ST.put s { ram = r {memAddr = Wire a, memIn = Wire acval, memWE = True}}
             return store2
-        Insn Jump a -> do
-            ST.put s { cpu = c {pc = setReg8 a pcreg }}
+        MachInsn Jump a -> do
+            ST.put s { cpu = c {pc = setReg a pcreg }}
             return fetch
-        Insn JumpZ a ->
-            if toNumS acval == 0 
-                then ST.put s { cpu = c {pc = setReg8 a pcreg }} >> return fetch
+        MachInsn JumpZ a ->
+            if acval == 0 
+                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
                 else return fetch
-        Insn JumpN a ->
-            if toNumS acval < 0
-                then ST.put s { cpu = c {pc = setReg8 a pcreg }} >> return fetch
+        MachInsn JumpN a ->
+            if acval < 0
+                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
                 else return fetch
-        Insn JumpNZ a ->
-            if toNumS acval /= 0
-                then ST.put s { cpu = c {pc = setReg8 a pcreg }} >> return fetch
+        MachInsn JumpNZ a ->
+            if acval /= 0
+                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
                 else return fetch
-        Insn Add a ->
-            ST.put s { cpu = c {ac = setReg16 (memData !+ acval) acreg}} >> return fetch
-        Insn Sub a ->
-            ST.put s { cpu = c {ac = setReg16 (memData !- acval) acreg}} >> return fetch
-        Insn Mul a ->
-            ST.put s { cpu = c {ac = setReg16 (memData !* acval) acreg}} >> return fetch
-        Insn Out _ -> return fetch
+        MachInsn Add a ->
+            ST.put s { cpu = c {ac = setReg (memData + acval) acreg}} >> return fetch
+        MachInsn Sub a ->
+            ST.put s { cpu = c {ac = setReg (memData - acval) acreg}} >> return fetch
+        MachInsn Mul a ->
+            ST.put s { cpu = c {ac = setReg (memData * acval) acreg}} >> return fetch
+        MachInsn Out _ -> return fetch
 
 store2 :: Transition S
 store2 = T $ do 

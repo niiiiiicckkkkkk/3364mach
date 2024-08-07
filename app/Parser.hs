@@ -6,32 +6,12 @@ module Parser(
 
 import Control.Applicative
 import Data.Char
-import Binary
-import Data.Array
-import Data.Maybe
+
+import Loader
+import Simulator
 
 
 newtype Parser a = P {doParse :: String -> Maybe (a, String)}
-data Operation =
-              Load
-            | Store
-            | Jump
-            | JumpZ
-            | JumpN
-            | JumpNZ
-            | Add
-            | Sub
-            | Mul
-            | Out deriving (Eq)
-
-type Label = String
-data Value = BinaryVal Binary | LabelVal Label
-data ASM = Insn (Maybe Label) Operation Value| Def Label Value | NOP
-
-data Program = Program {
-    memory :: Array Int Binary,
-    pc :: Binary
-}
 
 instance Functor Parser where
     fmap :: (a -> b) -> Parser a -> Parser b
@@ -106,7 +86,10 @@ sepBy :: Parser a -> Parser b -> Parser [a]
 sepBy p sep = ((:) <$> p <*> many (sep *> p)) <|> pure []
 
 numP :: Parser Integer
-numP = fmap read (some digitChar)
+numP = minusP <*> fmap read (some digitChar)
+    where
+        minusP :: Parser (Integer -> Integer)
+        minusP = char '-' *> pure negate <|> pure id
 
 hexP :: Parser String
 hexP = stringP "0x" *> many (filterP (flip elem $ ['0'..'9'] ++ ['a'..'f']) get)
@@ -120,7 +103,7 @@ commentP = char '#' *> pure ()
 labelP :: Parser Label
 labelP = (:) <$> filterP ((&&) <$> isAlpha <*> isLower) get <*> many identifierChar
 
-opP :: Parser Operation
+opP :: Parser Opcode
 opP =   
         stringP "load" *> pure Load
     <|> stringP "store" *> pure Store
@@ -140,64 +123,17 @@ maybeP p = P $ \s -> doParse p s >>=
                      \(a, s') -> a >>=
                         \a -> return (a, s')
 
-valueP :: Parser Value
-valueP = binaryP <|> hexArg <|> labelArg
-    where
-        binaryP = BinaryVal <$> maybeP (readNum <$> numP)
-        hexArg = BinaryVal <$> maybeP (readHex <$> hexP)
-        labelArg = LabelVal <$> labelP
+operandP :: Parser Operand
+operandP = L <$> labelP <|> B . fromIntegral <$> numP
+
+constP :: Parser MachWord
+constP = fromIntegral <$> numP
 
 asmP :: Parser ASM
 asmP = insnP <|> defP
     where
-        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP valueP
-        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP valueP
-
-memLayout :: (Enum a, Num a) => a -> [ASM] -> [(a, ASM)]
-memLayout sz asm = zip [sz - 1, sz - 2..0] (reverse asm ++ repeat NOP)
-
-loadMemory :: (Integral a) => a -> [(a, ASM)] -> [(Label, a)] -> Maybe [(a, Binary)]
-loadMemory sz assembly labels = undefined
-    where
-        binOfAsm :: ASM -> Maybe Binary
-        binOfAsm (Insn _ op (BinaryVal b)) = fmap (!++) (lookup op opcodes) <*> pure b
-        binOfAsm (Insn _ op (LabelVal l)) = fmap (!++) (lookup op opcodes) <*> (lookup l labels >>= toAddr)
-        binOfAsm (Def _ (BinaryVal b)) = pure b
-        binOfAsm (Def l (LabelVal l')) = fmap (resizeS 16) $ lookup l' labels >>= toAddr
-        binOfAsm NOP = pure (resizeS 16 zero)
-
-
-        loadNum n = resizeS sz <$> readNum n
-        loadBin = resizeS sz
-        toAddr a = readNum a >>= \b -> return $ resizeS 8 b
-
-        opcodes :: [(Operation, Binary)]
-        opcodes = [
-                (Load, undefined),
-                (Store, undefined),
-                (Jump, undefined),
-                (JumpZ, undefined),
-                (JumpN, undefined),
-                (JumpNZ, undefined),
-                (Add, undefined),
-                (Sub, undefined),
-                (Mul, undefined),
-                (Out, undefined)
-            ]
-
-
-loader :: [ASM] -> Maybe Program
-loader asm = undefined
-    where
-        constants = filter (\asm -> case asm of {Def _ _ -> True; _ -> False}) asm
-        insns = filter (\asm -> case asm of {Insn _ _ _ -> True; _ -> False}) asm
-        layout = memLayout 256 (reverse constants ++ reverse insns)
-        labels = foldr mkLabels [] layout
-
-        mkLabels :: Num a => (a, ASM) -> [(a, Label)] -> [(a, Label)]
-        mkLabels (a, Def l _) acc = (a, l) : acc
-        mkLabels (a, Insn (Just l) _ _) acc = (a, l) : acc
-        mkLabels _ acc = acc
+        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP
+        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP constP
 
 programP :: Parser Program
 programP = maybeP (loader <$> many asmP)
