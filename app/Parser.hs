@@ -1,7 +1,7 @@
 {-# LANGUAGE InstanceSigs #-}
 
 module Parser(
-    Parser,
+    parseASM
 ) where
 
 import Control.Applicative
@@ -98,10 +98,10 @@ wsP :: Parser a -> Parser a
 wsP p = p <* many (filterP isSpace get)
 
 commentP :: Parser ()
-commentP = char '#' *> pure ()
+commentP = char '#' *> many (filterP (/= '\n') get) *> pure ()
 
 labelP :: Parser Label
-labelP = (:) <$> filterP ((&&) <$> isAlpha <*> isLower) get <*> many identifierChar
+labelP = (:) <$> filterP ((&&) <$> isAlphaNum <*> isLower) get <*> many identifierChar
 
 opP :: Parser Opcode
 opP =   
@@ -130,13 +130,16 @@ constP :: Parser MachWord
 constP = fromIntegral <$> numP
 
 asmP :: Parser ASM
-asmP = insnP <|> defP
+asmP = insnP <|> defP <|> wsP commentP *> asmP
     where
-        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP
-        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP constP
+        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP <* optional commentP
+        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP constP <* optional commentP
 
 programP :: Parser Program
 programP = maybeP (loader <$> many asmP)
+
+parseASM :: String -> Maybe Program
+parseASM = fmap fst . doParse programP 
 
 
 

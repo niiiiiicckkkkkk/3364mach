@@ -1,6 +1,38 @@
 module Main where
 
-import Parser ()
+import Parser
+import Simulator
+
+import System.Environment
+
+simulate :: S -> IO ()
+simulate s = do
+    cmd <- getLine
+
+    case cmd of
+        "dump" -> print s >> simulate s
+        "step" -> simulate (stepN 1 s)
+        "run" -> putStrLn "TODO" >> simulate s
+        "quit" -> return ()
+        _ -> putStrLn ""
+
+
+loadSim :: String -> IO ()
+loadSim file = do
+    asm <- readFile file
+    let program = parseASM asm
+
+    case program of
+        Nothing -> putStrLn "parse fail"
+        Just p -> simulate (initState p)
 
 main :: IO ()
-main = putStrLn "test1"
+main = do
+    args <- getArgs
+
+    case args of
+        [] -> putStrLn "no file provided"
+        [f] -> loadSim f
+        args@(_ : _) -> 
+            putStrLn $ "recieved " ++ show (length args) ++ " arguments but expected 1"
+

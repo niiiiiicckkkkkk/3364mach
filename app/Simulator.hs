@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+
 module Simulator where
 
 import Binary
@@ -6,16 +7,19 @@ import qualified Data.Map as M
 
 import qualified Control.Monad.State as ST
 
+import qualified Data.List.NonEmpty as NE
+import Data.List.NonEmpty (NonEmpty((:|)))
+
 import Data.Default
 
-newtype Wire a = Wire { w :: a }
+newtype Wire a = Wire { w :: a } deriving Show
 
-data DFF a = DFF { d :: a, q :: a}
+data DFF a = DFF { d :: a, q :: a} deriving Show
 
 data Reg a = Reg {
     dff :: DFF a,
     we :: Bool
-}
+} deriving Show
 
 instance Default a => Default (Reg a) where
     def :: Reg a
@@ -30,7 +34,7 @@ data RAM = RAM {
     memAddr :: Wire MachAddr,
     memIn :: Wire MachWord,
     memOut :: Wire MachWord
-}
+} deriving Show
 
 data Opcode =
               Load
@@ -42,10 +46,10 @@ data Opcode =
             | Add
             | Sub
             | Mul
-            | Out deriving Eq
+            | Out deriving (Eq, Show)
 
 type Arg = Bin8
-data MachInsn = MachInsn Opcode Arg | NOP
+data MachInsn = MachInsn Opcode Arg | NOP deriving Show
 
 data Program = Program {
     assocs :: [(MachAddr, MachWord)],
@@ -57,13 +61,18 @@ data CPU = CPU {
     pc :: Reg MachAddr,
     ac :: Reg MachWord,
     ir :: Reg MachInsn
-}
+} deriving Show
 
 data S = S {
     ram :: RAM,
     cpu :: CPU,
-    prev :: Maybe S
+    prev :: Maybe S,
+    t :: Transition S
 }
+
+instance Show S where
+    show :: S -> String
+    show s = show (ram s) ++ "\n" ++ show (cpu s)
 
 type Word = Bin16
 
@@ -81,7 +90,8 @@ initState p = S {
         ac = regOfVal 0,
         ir = regOfVal NOP
     },
-    prev = Nothing
+    prev = Nothing,
+    t = fetch
 }
     where
         regOfVal :: a -> Reg a
@@ -170,9 +180,10 @@ fetch = T $ do
 
     ST.put s {
         cpu = c { pc = setReg (curr + 1) (pc c)},
-        ram = r { memAddr = Wire curr }
+        ram = r { memAddr = Wire curr },
+        prev = Just s,
+        t = decode
     }
-
     return decode
     
 
@@ -189,13 +200,31 @@ decode = T $ do
 
     ST.put s {
         cpu = c { ir = setReg insn reg },
-        ram = r { memAddr = Wire $ trim8 i}
+        ram = r { memAddr = Wire $ trim8 i},
+        prev = Just s,
+        t = execute
     }
     return execute
 
     where
         readInsn :: MachWord -> MachInsn
-        readInsn = undefined
+        readInsn (Bin16 i) =
+            let bits = NE.toList (getB i)
+                opcode = Bin8 (Binary $ bits !! 8 :| tail (drop 8 bits))
+                arg = Bin8 (Binary $ head bits :| tail (take 8 bits)) in
+                    case opcode of
+                        0 -> MachInsn Load arg
+                        1 -> MachInsn Store arg
+                        2 -> MachInsn Jump arg
+                        3 -> MachInsn JumpZ arg
+                        4 -> MachInsn JumpN arg
+                        5 -> MachInsn Add arg
+                        6 -> MachInsn Sub arg
+                        7 -> MachInsn Mul arg
+                        8 -> MachInsn Out arg
+                        9 -> MachInsn JumpNZ arg
+                        _ -> error "bad insn"
+                
 
 execute :: Transition S
 execute = T $ do
@@ -212,31 +241,31 @@ execute = T $ do
     case insn of
         NOP -> return fetch
         MachInsn Load a ->
-            ST.put s { cpu = c {ac = setReg memData acreg}} >> return fetch
+            ST.put s { cpu = c {ac = setReg memData acreg}, prev = Just s, t = fetch} >> return fetch
         MachInsn Store a -> do
-            ST.put s { ram = r {memAddr = Wire a, memIn = Wire acval, memWE = True}}
+            ST.put s { ram = r {memAddr = Wire a, memIn = Wire acval, memWE = True}, prev = Just s, t = store2}
             return store2
         MachInsn Jump a -> do
-            ST.put s { cpu = c {pc = setReg a pcreg }}
+            ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch}
             return fetch
         MachInsn JumpZ a ->
             if acval == 0 
-                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
+                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
                 else return fetch
         MachInsn JumpN a ->
             if acval < 0
-                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
+                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
                 else return fetch
         MachInsn JumpNZ a ->
             if acval /= 0
-                then ST.put s { cpu = c {pc = setReg a pcreg }} >> return fetch
+                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
                 else return fetch
         MachInsn Add a ->
-            ST.put s { cpu = c {ac = setReg (memData + acval) acreg}} >> return fetch
+            ST.put s { cpu = c {ac = setReg (memData + acval) acreg}, prev = Just s, t = fetch} >> return fetch
         MachInsn Sub a ->
-            ST.put s { cpu = c {ac = setReg (memData - acval) acreg}} >> return fetch
+            ST.put s { cpu = c {ac = setReg (memData - acval) acreg}, prev = Just s, t = fetch} >> return fetch
         MachInsn Mul a ->
-            ST.put s { cpu = c {ac = setReg (memData * acval) acreg}} >> return fetch
+            ST.put s { cpu = c {ac = setReg (memData * acval) acreg}, prev = Just s, t = fetch} >> return fetch
         MachInsn Out _ -> return fetch
 
 store2 :: Transition S
@@ -244,7 +273,7 @@ store2 = T $ do
     tick
     s <- ST.get
     r <- ST.gets ram
-    ST.put s {ram = r { memWE = False }}
+    ST.put s {ram = r { memWE = False }, prev = Just s, t = fetch}
     return fetch
 
 test1 :: Transition S'
@@ -258,28 +287,38 @@ inittest = S' {
     test = 0
 }
 
--- State S transition -> 
-stepN :: Int -> Transition a -> ST.State a a
-stepN 0 _ = ST.get
-stepN n (T t) = t >>= \t' -> stepN (n - 1) t'
 
-stepWhile :: (a -> Bool) -> Transition a -> ST.State a a
-stepWhile p (T t) = 
+-- State S transition -> 
+transitionN :: Int -> Transition a -> ST.State a a
+transitionN 0 _ = ST.get
+transitionN n (T t) = t >>= \t' -> transitionN (n - 1) t'
+
+transitionWhile :: (a -> Bool) -> Transition a -> ST.State a a
+transitionWhile p (T t) = 
     ST.get >>=
         \s -> case p s of
-                True -> t >>= \t' -> stepWhile p t'
+                True -> t >>= \t' -> transitionWhile p t'
                 False -> ST.get
 
-testState :: ST.State S' S'
-testState = stepN 3 test1
+--testState :: ST.State S' S'
+--testState = stepN 3 test1
+
+
+stepN :: Int -> S -> S
+stepN i s = ST.evalState (transitionN i (t s)) s
+
+stepWhile :: (S -> Bool) -> S -> S
+stepWhile p s = ST.evalState (transitionWhile p (t s)) s
+
+
 
 -- >>> ST.execState testState inittest
 -- S {test = 4}
 
 -- 1 3 4 6 7 9 10 12 13 15 16 18 19 21
 
-ttt :: ST.State S' S'
-ttt = stepWhile (\s -> test s < 20) test1
+--ttt :: ST.State S' S'
+--ttt = stepWhile (\s -> test s < 20) test1
 
 -- >>> ST.execState ttt inittest
 -- S {test = 21}
