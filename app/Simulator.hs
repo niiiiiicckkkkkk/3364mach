@@ -19,6 +19,8 @@ import Data.Array
 import Data.Proxy
 import Data.Maybe
 
+import Data.Foldable
+
 import qualified Control.Monad.State as ST
 
 class MachCmp f where
@@ -101,7 +103,7 @@ data Opcode =
             | Mul
             | Out deriving (Eq, Show)
 
-data MachInsn = MachInsn Opcode (BinVal 8) | NOP
+data MachInsn = MachInsn Opcode (BinVal 8) | NOP deriving Show
 
 newtype Transition a = T (ST.State a (Transition a))
 
@@ -109,13 +111,33 @@ data Program = Program {
     bindings :: [(MachAddr, MachWord)],
     start :: MachAddr,
     end :: MachAddr
-}
+} deriving Show
 
 data CPU munit addr word = CPU {
     pc :: munit addr,
     ac :: munit word,
     ir :: munit MachInsn
 }
+
+instance (Debug a, Debug w, MachCmp mu) => Show (CPU mu a w) where
+    show :: CPU mu a w -> String
+    show cpu = "PC: " ++ showNumU (read $ pc cpu) ++ "\n" ++
+                "AC: " ++ showNumS (read $ ac cpu) ++ "\n" ++
+                "IR: " ++ show (read $ ir cpu) ++ "\n" 
+
+instance (Debug a, Debug w, MachCmp mu, Ix a) => Show (RAM a mu w) where
+    show :: RAM a mu w -> String
+    show r = "ADDR: " ++ showNumU (memAddr r) ++ "\n" ++
+            "INPUT: " ++ showNumS (memIn r) ++ "\n" ++
+            "OUTPUT: " ++ showNumS (memOut r) ++ "\n" ++
+            "MEMORY: " ++ "\n" ++ memcontents ++ "\n"
+        where
+            memcontents :: String
+            memcontents = foldMap display $ assocs (mem r)
+
+            display :: (Debug a, MachCmp mu, Debug i) => (i, mu a) -> String
+            display (i, m) = "\t" ++ showNumU i ++ ":\t" ++ showNumS (read m) ++ "\n"
+
 
 
 data S = S {
@@ -124,6 +146,10 @@ data S = S {
     prev :: Maybe S,
     t :: Transition S
 }
+
+instance Show S where
+    show :: S -> String
+    show s = show (cpu s) ++ show (ram s)
 
 
 initState :: Program -> S

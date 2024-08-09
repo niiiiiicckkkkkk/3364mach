@@ -59,4 +59,4 @@ loader asm = do
     as <- traverse (traverse (encodeASM labels)) layout
     s <- lookup "start" labels
     e <- lookup "done" labels
-    return Program { bindings = [], start = 0, end = 0 }
+    return Program { bindings = as, start = s, end = e }

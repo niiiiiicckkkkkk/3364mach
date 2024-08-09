@@ -14,7 +14,7 @@
 
 module Binary(
     BinVal,
-    Debug,
+    Debug(..),
     reduce,
     extend,
     binConv8,
@@ -384,6 +384,19 @@ instance Debug (BinVal 8) where
     showNumU = showNumUB
 
     showNumS :: BinVal 8 -> String
+    showNumS = showNumSB
+
+instance Debug (BinVal 16) where
+    showHex :: BinVal 16 -> String
+    showHex = undefined
+
+    showBin :: BinVal 16 -> String
+    showBin = showBinB
+
+    showNumU :: BinVal 16 -> String
+    showNumU = showNumUB
+
+    showNumS :: BinVal 16 -> String
     showNumS = showNumSB
 
 
