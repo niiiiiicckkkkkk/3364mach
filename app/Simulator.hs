@@ -1,6 +1,14 @@
-{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Simulator where
 
@@ -9,7 +17,10 @@ import Prelude hiding (read, write)
 import Binary
 import Data.Array
 
+import Data.Proxy
 import Data.Ix
+
+import Data.Maybe
 
 import qualified Control.Monad.State as ST
 
@@ -110,11 +121,11 @@ data CPU munit addr word = CPU {
 }
 
 
-data S mu a w = S {
-    ram :: RAM a mu w,
-    cpu :: CPU mu a w,
-    prev :: Maybe (S mu a w),
-    t :: Transition (S mu a w)
+data S = S {
+    ram :: RAM MachAddr Reg MachWord,
+    cpu :: CPU Reg MachAddr MachWord,
+    prev :: Maybe S,
+    t :: Transition S
 }
 {-
 initState :: Program -> S
@@ -138,7 +149,7 @@ initState p = S {
         regOfVal :: a -> Reg a
         regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False} -}
 
-tickRegs :: (MachCmp mu) => ST.State (S mu a w) ()
+tickRegs :: ST.State S ()
 tickRegs = 
     ST.get >>=
         \s -> ST.put s{
@@ -152,13 +163,13 @@ tickRegs =
         ir = tick (ir c)
     }
 
-risingEdge :: (Ix a, MachCmp mu) => ST.State (S mu a w) ()
+risingEdge :: ST.State S ()
 risingEdge = 
     tickRegs >> ST.get >>=
         \s -> ST.put $ s { ram = tick (ram s) }
 
 
-fetch :: (Ix a, Debug a, Debug w, MachCmp mu) => Transition (S mu a w)
+fetch :: Transition S
 fetch = T $ do
     risingEdge
     s <- ST.get
@@ -175,95 +186,96 @@ fetch = T $ do
     return decode
     
 
-decode :: Transition (S mu a w)
-decode = undefined {-T $ do
-    tick
+decode :: Transition S
+decode = T $ do
+    risingEdge
     s <- ST.get
     c <- ST.gets cpu
     r <- ST.gets ram
-    reg <- ST.gets (ir . cpu)
-    i <- ST.gets (w . memOut . ram)
+    ireg <- ST.gets (ir . cpu)
+    mout <- ST.gets (memOut . ram)
 
-    let insn = readInsn i
+    let opcode = reduce mout (Proxy @8) (Proxy @15) binConv8
+    let operand = reduce mout (Proxy @0) (Proxy @7) binConv8
+    let insn = fromMaybe NOP (MachInsn <$> lookup opcode opcodes <*> pure operand)
 
     ST.put s {
-        cpu = c { ir = setReg insn reg },
-        ram = r { memAddr = Wire $ trim8 i},
+        cpu = c { ir = write insn (ir c) },
+        ram = r { memAddr = operand},
         prev = Just s,
         t = execute
     }
     return execute
 
     where
-        readInsn :: MachWord -> MachInsn
-        readInsn (Bin16 i) =
-            let bits = NE.toList (getB i)
-                opcode = Bin8 (Binary $ bits !! 8 :| tail (drop 8 bits))
-                arg = Bin8 (Binary $ head bits :| tail (take 8 bits)) in
-                    case opcode of
-                        0 -> MachInsn Load arg
-                        1 -> MachInsn Store arg
-                        2 -> MachInsn Jump arg
-                        3 -> MachInsn JumpZ arg
-                        4 -> MachInsn JumpN arg
-                        5 -> MachInsn Add arg
-                        6 -> MachInsn Sub arg
-                        7 -> MachInsn Mul arg
-                        8 -> MachInsn Out arg
-                        9 -> MachInsn JumpNZ arg
-                        _ -> error "bad insn" -}
+        opcodes :: [(BinVal 8, Opcode)]
+        opcodes = [
+                        (0, Load),
+                        (1, Store),
+                        (2, Jump),
+                        (3, JumpZ),
+                        (4, JumpN),
+                        (5, Add),
+                        (6, Sub),
+                        (7, Mul),
+                        (8, Out),
+                        (9, JumpNZ)
+                ]
                 
-{-
+
 execute :: Transition S
 execute = T $ do
-    tick
+    risingEdge
     s <- ST.get
     c <- ST.gets cpu
     r <- ST.gets ram
-    memData <- ST.gets (w . memOut . ram)
+    mdata <- ST.gets (read . ram)
     pcreg <- ST.gets (pc . cpu)
     acreg <- ST.gets (ac . cpu)
-    acval <- ST.gets (regOut . ac . cpu)
-    insn <- ST.gets (regOut . ir . cpu)
+    acval <- ST.gets (read . ac . cpu)
+    insn <- ST.gets (read . ir . cpu)
+
+    let s' = s { prev = Just s, t = fetch }
 
     case insn of
         NOP -> return fetch
-        MachInsn Load a ->
-            ST.put s { cpu = c {ac = setReg memData acreg}, prev = Just s, t = fetch} >> return fetch
+        MachInsn Load _ ->
+            ST.put s' { cpu = c {ac = write mdata acreg} } >> return fetch
         MachInsn Store a -> do
-            ST.put s { ram = r {memAddr = Wire a, memIn = Wire acval, memWE = True}, prev = Just s, t = store2}
+            let r' = write acval $ r { memAddr = a }
+            ST.put s' { ram = r', t = store2}
             return store2
         MachInsn Jump a -> do
-            ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch}
+            ST.put s' { cpu = c {pc = write a pcreg } }
             return fetch
         MachInsn JumpZ a ->
             if acval == 0 
-                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
-                else return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
+                else ST.put s' >> return fetch
         MachInsn JumpN a ->
             if acval < 0
-                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
-                else return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
+                else ST.put s' >> return fetch
         MachInsn JumpNZ a ->
             if acval /= 0
-                then ST.put s { cpu = c {pc = setReg a pcreg }, prev = Just s, t = fetch} >> return fetch
-                else return fetch
-        MachInsn Add a ->
-            ST.put s { cpu = c {ac = setReg (memData + acval) acreg}, prev = Just s, t = fetch} >> return fetch
-        MachInsn Sub a ->
-            ST.put s { cpu = c {ac = setReg (memData - acval) acreg}, prev = Just s, t = fetch} >> return fetch
-        MachInsn Mul a ->
-            ST.put s { cpu = c {ac = setReg (memData * acval) acreg}, prev = Just s, t = fetch} >> return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
+                else ST.put s' >> return fetch
+        MachInsn Add _ ->
+            ST.put s' { cpu = c {ac = write (mdata + acval) acreg} } >> return fetch
+        MachInsn Sub _ ->
+            ST.put s' { cpu = c {ac = write (mdata - acval) acreg} } >> return fetch
+        MachInsn Mul _ ->
+            ST.put s' { cpu = c {ac = write (mdata * acval) acreg} } >> return fetch
         MachInsn Out _ -> return fetch
 
 store2 :: Transition S
 store2 = T $ do 
-    tick
+    risingEdge
     s <- ST.get
-    r <- ST.gets ram
-    ST.put s {ram = r { memWE = False }, prev = Just s, t = fetch}
+    ST.put s { prev = Just s, t = fetch }
     return fetch
 
+{-
 test1 :: Transition S'
 test1 = T $ ST.get >>= \s -> ST.put S' {test = test s + 1} >> return test2
 

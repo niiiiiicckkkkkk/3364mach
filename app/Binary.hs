@@ -14,7 +14,11 @@
 
 module Binary(
     BinVal,
-    Debug
+    Debug,
+    reduce,
+    extend,
+    binConv8,
+    binConv16
 ) where
 
 import Data.Word
