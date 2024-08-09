@@ -4,6 +4,8 @@
 
 module Simulator where
 
+import Prelude hiding (read, write)
+
 import Binary
 import Data.Array
 
@@ -11,27 +13,73 @@ import Data.Ix
 
 import qualified Control.Monad.State as ST
 
+class MachCmp f where
+    tick :: f a -> f a
+    write :: a -> f a -> f a
+    read :: f a -> a
 
-newtype Wire a = Wire { w :: a } deriving Show
+data DFF a = DFF { d :: a, q :: a}
 
-data DFF a = DFF { d :: a, q :: a} deriving Show
+instance MachCmp DFF where
+    tick :: DFF a -> DFF a
+    tick dff' = dff' {q = d dff'}
+
+    read :: DFF a -> a
+    read = q
+
+    write :: a -> DFF a -> DFF a
+    write a dff' = dff' {d = a}
+
 
 data Reg a = Reg {
     dff :: DFF a,
     we :: Bool
-} deriving Show
+}
+
+instance MachCmp Reg where
+    tick :: Reg a -> Reg a
+    tick r
+        | we r = r {dff = tick (dff r), we = False}
+        | otherwise = r
+    
+    read :: Reg a -> a
+    read = read . dff
+
+    write :: a -> Reg a -> Reg a
+    write a r = r {we = True, dff = write a (dff r)}
 
 
-type MachWord = forall a. Debug a => a
-type MachAddr = forall a. (Ix a, Debug a)
+type MachWord = BinVal 16
+type MachAddr = BinVal 8
 
-data RAM = RAM { 
-    mem :: Array MachAddr (Reg MachWord), 
-    memWE :: Bool,
-    memAddr :: Wire MachAddr,
-    memIn :: Wire MachWord,
-    memOut :: Wire MachWord
-} deriving Show
+data RAM addr munit word = RAM { 
+    mem :: Array addr (munit word),
+    memAddr :: addr,
+    memIn :: word,
+    memOut :: word
+}
+
+instance (Ix a, MachCmp m) => MachCmp (RAM a m) where
+    tick :: RAM a m w -> RAM a m w
+    tick r =
+        let
+            r' = r { mem = tick <$> mem r }
+        in
+            r' { memOut = read $ mem r' ! memAddr r' }
+
+    read :: RAM a b w -> w
+    read = memOut
+
+    write :: w -> RAM a m w -> RAM a m w
+    write w r =
+        let
+            reg' = write w $ mem r ! memAddr r
+            mem' = mem r // [(memAddr r, reg')]
+        in
+            r { mem = mem'}
+
+select :: a -> RAM a mu w -> RAM a mu w
+select a r = r { memAddr = a }
 
 data Opcode =
               Load
@@ -45,8 +93,9 @@ data Opcode =
             | Mul
             | Out deriving (Eq, Show)
 
-type Arg = forall a. Debug a => a
-data MachInsn = MachInsn Opcode Arg | NOP deriving Show
+data MachInsn = MachInsn Opcode (BinVal 8) | NOP
+
+newtype Transition a = T (ST.State a (Transition a))
 
 data Program = Program {
     assocs :: [(MachAddr, MachWord)],
@@ -54,23 +103,19 @@ data Program = Program {
     end :: MachAddr
 }
 
-data CPU = CPU {
-    pc :: Reg MachAddr,
-    ac :: Reg MachWord,
-    ir :: Reg MachInsn
-} deriving Show
-
-data S = S {
-    ram :: RAM,
-    cpu :: CPU,
-    prev :: Maybe S,
-    t :: Transition S
+data CPU munit addr word = CPU {
+    pc :: munit addr,
+    ac :: munit word,
+    ir :: munit MachInsn
 }
 
-instance Show S where
-    show :: S -> String
-    show s = show (ram s) ++ "\n" ++ show (cpu s)
 
+data S mu a w = S {
+    ram :: RAM a mu w,
+    cpu :: CPU mu a w,
+    prev :: Maybe (S mu a w),
+    t :: Transition (S mu a w)
+}
 {-
 initState :: Program -> S
 initState p = S {
@@ -93,98 +138,45 @@ initState p = S {
         regOfVal :: a -> Reg a
         regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False} -}
 
-regIn :: Reg a -> a
-regIn = d . dff
-
-regOut :: Reg a -> a
-regOut = q . dff
-
-setReg :: a -> Reg a -> Reg a
-setReg a r = r { dff = (dff r) {d = a}, we = True}
-
-tickDFF :: DFF a -> DFF a
-tickDFF DFF {d = d, q = q} = DFF {d = d, q = d}
-
-tickReg :: Reg a -> Reg a
-tickReg r
-    | we r = r {dff = tickDFF (dff r), we = False}
-    | otherwise = r
-
-toggleRegWE :: Bool -> Reg a -> Reg a
-toggleRegWE b r = r { we = b}
-
-tickRegs :: ST.State S ()
+tickRegs :: (MachCmp mu) => ST.State (S mu a w) ()
 tickRegs = 
     ST.get >>=
         \s -> ST.put s{
             cpu = updateRegs (cpu s)
         }
     where
-    updateRegs :: CPU -> CPU
+    updateRegs :: (MachCmp mu) => CPU mu a w -> CPU mu a w
     updateRegs c = c {
-        pc = tickReg (pc c),
-        ac = tickReg (ac c),
-        ir = tickReg (ir c)
+        pc = tick (pc c),
+        ac = tick (ac c),
+        ir = tick (ir c)
     }
 
-tickMem :: ST.State S ()
-tickMem =
-    ST.get >>=
-        \s -> ST.put s{
-            ram = updateRam (ram s)
-        }
-    where
-    updateRam :: RAM -> RAM
-    updateRam r
-        | memWE r =
-            let 
-                m = tickReg <$> mem r
-                m' = assign16 (w $ memAddr r) (w $ memIn r) m
-            in
-                r {mem = m', memOut = Wire $ proj16 (w $ memAddr r) m'}
-        | otherwise =
-            let 
-                m = tickReg <$> mem r
-                o = Wire $ proj16 (w $ memAddr r) m
-            in 
-                r {mem = m, memOut = o}
+risingEdge :: (Ix a, MachCmp mu) => ST.State (S mu a w) ()
+risingEdge = 
+    tickRegs >> ST.get >>=
+        \s -> ST.put $ s { ram = tick (ram s) }
 
-    proj16 :: (Ord a, Default b) => a -> M.Map a (Reg b) -> b
-    proj16 addr memory = (d . dff) $ M.findWithDefault def addr memory
 
-    assign16 :: (Ord a, Default b) => a -> b -> M.Map a (Reg b) -> M.Map a (Reg b)
-    assign16 addr v memory =
-        let reg = M.findWithDefault Reg {dff = DFF {d = def, q = def}, we = False } addr memory in
-            M.insert addr (setReg v reg) memory
-
-tick :: ST.State S ()
-tick = tickRegs >> tickMem
-
-data S' = S' {
-    test :: Int
-} deriving Show
-
-newtype Transition a = T (ST.State a (Transition a))
-
-fetch :: Transition S
+fetch :: (Ix a, Debug a, Debug w, MachCmp mu) => Transition (S mu a w)
 fetch = T $ do
-    tick
+    risingEdge
     s <- ST.get
     r <- ST.gets ram
     c <- ST.gets cpu
-    curr <- ST.gets (q . dff . pc . cpu)
+    idx <- ST.gets (read . pc . cpu)
 
     ST.put s {
-        cpu = c { pc = setReg (curr + 1) (pc c)},
-        ram = r { memAddr = Wire curr },
+        cpu = c { pc = write (idx + 1) (pc c)},
+        ram = r { memAddr = idx },
         prev = Just s,
         t = decode
     }
     return decode
     
 
-decode :: Transition S
-decode = T $ do
+decode :: Transition (S mu a w)
+decode = undefined {-T $ do
     tick
     s <- ST.get
     c <- ST.gets cpu
@@ -219,9 +211,9 @@ decode = T $ do
                         7 -> MachInsn Mul arg
                         8 -> MachInsn Out arg
                         9 -> MachInsn JumpNZ arg
-                        _ -> error "bad insn"
+                        _ -> error "bad insn" -}
                 
-
+{-
 execute :: Transition S
 execute = T $ do
     tick
@@ -319,4 +311,6 @@ stepWhile p s = ST.evalState (transitionWhile p (t s)) s
 -- >>> ST.execState ttt inittest
 -- S {test = 21}
 
+
+-}
 
