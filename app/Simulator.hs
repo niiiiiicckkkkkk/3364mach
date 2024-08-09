@@ -1,16 +1,16 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Simulator where
 
 import Binary
-import qualified Data.Map as M
+import Data.Array
+
+import Data.Ix
 
 import qualified Control.Monad.State as ST
 
-import qualified Data.List.NonEmpty as NE
-import Data.List.NonEmpty (NonEmpty((:|)))
-
-import Data.Default
 
 newtype Wire a = Wire { w :: a } deriving Show
 
@@ -21,15 +21,12 @@ data Reg a = Reg {
     we :: Bool
 } deriving Show
 
-instance Default a => Default (Reg a) where
-    def :: Reg a
-    def = Reg { dff = DFF {d = def, q = def}, we = False }
 
-type MachWord = Bin16
-type MachAddr = Bin8
+type MachWord = forall a. Debug a => a
+type MachAddr = forall a. (Ix a, Debug a)
 
 data RAM = RAM { 
-    mem :: M.Map MachAddr (Reg MachWord), 
+    mem :: Array MachAddr (Reg MachWord), 
     memWE :: Bool,
     memAddr :: Wire MachAddr,
     memIn :: Wire MachWord,
@@ -48,7 +45,7 @@ data Opcode =
             | Mul
             | Out deriving (Eq, Show)
 
-type Arg = Bin8
+type Arg = forall a. Debug a => a
 data MachInsn = MachInsn Opcode Arg | NOP deriving Show
 
 data Program = Program {
@@ -74,8 +71,7 @@ instance Show S where
     show :: S -> String
     show s = show (ram s) ++ "\n" ++ show (cpu s)
 
-type Word = Bin16
-
+{-
 initState :: Program -> S
 initState p = S {
     ram = RAM {
@@ -95,7 +91,7 @@ initState p = S {
 }
     where
         regOfVal :: a -> Reg a
-        regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False}
+        regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False} -}
 
 regIn :: Reg a -> a
 regIn = d . dff
