@@ -4,14 +4,17 @@ import Parser
 import Simulator
 
 import System.Environment
+import System.IO
+
+import Control.Applicative
 
 simulate :: S -> IO ()
 simulate s = do
     cmd <- getLine
 
     case cmd of
-        "dump" -> print s >> simulate s
-        "step" -> simulate (stepN 1 s)
+        "dump" -> undefined
+        "step" -> undefined
         "run" -> putStrLn "TODO" >> simulate s
         "quit" -> return ()
         _ -> putStrLn ""
@@ -20,14 +23,20 @@ simulate s = do
 loadSim :: String -> IO ()
 loadSim file = do
     asm <- readFile file
+    {-
     let program = parseASM asm
 
     case program of
         Nothing -> putStrLn "parse fail"
         Just p -> simulate (initState p)
+    -}
+    let test = doParse (many asmP) asm
+    print test
 
 main :: IO ()
 main = do
+    hSetBuffering stdin NoBuffering
+    hSetBuffering stdout NoBuffering
     args <- getArgs
 
     case args of

@@ -1,8 +1,10 @@
 {-# LANGUAGE InstanceSigs #-}
 
+{-
 module Parser(
     parseASM
-) where
+) where -}
+module Parser where
 
 import Control.Applicative
 import Data.Char
@@ -56,7 +58,7 @@ filterP f p = P $ \s -> doParse p s >>= check f
             | otherwise = Nothing
 
 takeWhileP :: (a -> Bool) -> Parser a -> Parser [a]
-takeWhileP f p = (:) <$> filterP f p <*> (takeWhileP f p <|> eof *> pure [])
+takeWhileP f p = (:) <$> filterP f p <*> (takeWhileP f p <|> pure [])
 
 alphaChar :: Parser Char
 alphaChar = filterP isAlpha get
@@ -86,7 +88,7 @@ sepBy :: Parser a -> Parser b -> Parser [a]
 sepBy p sep = ((:) <$> p <*> many (sep *> p)) <|> pure []
 
 numP :: Parser Integer
-numP = minusP <*> fmap read (some digitChar)
+numP = minusP <*> fmap Prelude.read (some digitChar)
     where
         minusP :: Parser (Integer -> Integer)
         minusP = char '-' *> pure negate <|> pure id
@@ -98,19 +100,19 @@ wsP :: Parser a -> Parser a
 wsP p = p <* many (filterP isSpace get)
 
 commentP :: Parser ()
-commentP = char '#' *> many (filterP (/= '\n') get) *> pure ()
+commentP = wsP $ char '#' *> optional (takeWhileP (/='\n') get) *> pure ()
 
 labelP :: Parser Label
-labelP = (:) <$> filterP ((&&) <$> isAlphaNum <*> isLower) get <*> many identifierChar
+labelP = (:) <$> filterP isAlphaNum get <*> many identifierChar
 
 opP :: Parser Opcode
 opP =   
         stringP "load" *> pure Load
     <|> stringP "store" *> pure Store
-    <|> stringP "jump" *> pure Jump
-    <|> stringP "jumpz" *> pure JumpZ
-    <|> stringP "jumpn" *> pure JumpN
     <|> stringP "jumpnz" *> pure JumpNZ
+    <|> stringP "jumpn" *> pure JumpN
+    <|> stringP "jumpz" *> pure JumpZ
+    <|> stringP "jump" *> pure Jump
     <|> stringP "add" *> pure Add
     <|> stringP "sub" *> pure Sub
     <|> stringP "mul" *> pure Mul
@@ -126,20 +128,27 @@ maybeP p = P $ \s -> doParse p s >>=
 operandP :: Parser Operand
 operandP = L <$> labelP <|> B . fromIntegral <$> numP
 
-constP :: Parser MachWord
-constP = fromIntegral <$> numP
-
 asmP :: Parser ASM
-asmP = insnP <|> defP <|> wsP commentP *> asmP
+asmP = many commentP *> (wsP insnP <|> wsP defP)
     where
-        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP <* optional commentP
-        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP constP <* optional commentP
+        insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP
+        defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP numP
 
 programP :: Parser Program
 programP = maybeP (loader <$> many asmP)
 
 parseASM :: String -> Maybe Program
-parseASM = fmap fst . doParse programP 
+parseASM = fmap fst . doParse programP
+
+
+test :: String
+test = "#\n        # This block is here to delay O(1 second) after displaying each new\n        # prime number, so that you can see each number display.\n        #\nload    Jdelay  #"
+
+-- >>> doParse (many asmP) test
+-- Just ([Insn Nothing Load (L "Jdelay")],"#")
+
+-- >>> doParse (asmP) "load     jdelay    #"
+-- Just (Insn Nothing Load (L "jdelay"),"#")
 
 
 

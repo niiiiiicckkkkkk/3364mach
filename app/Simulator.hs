@@ -12,14 +12,11 @@
 
 module Simulator where
 
-import Prelude hiding (read, write)
+import Prelude hiding (read)
 
 import Binary
 import Data.Array
-
 import Data.Proxy
-import Data.Ix
-
 import Data.Maybe
 
 import qualified Control.Monad.State as ST
@@ -109,7 +106,7 @@ data MachInsn = MachInsn Opcode (BinVal 8) | NOP
 newtype Transition a = T (ST.State a (Transition a))
 
 data Program = Program {
-    assocs :: [(MachAddr, MachWord)],
+    bindings :: [(MachAddr, MachWord)],
     start :: MachAddr,
     end :: MachAddr
 }
@@ -127,15 +124,15 @@ data S = S {
     prev :: Maybe S,
     t :: Transition S
 }
-{-
+
+
 initState :: Program -> S
 initState p = S {
     ram = RAM {
-        mem = M.fromAscList ((fmap . fmap) regOfVal (assocs p)),
-        memWE = False,
-        memAddr = Wire 0,
-        memIn = Wire 0,
-        memOut = Wire 0
+        mem = array (0, 255) [fromMaybe (i, regOfVal 0) $ flip (,) <$> fmap regOfVal (lookup i (bindings p)) <*> pure i | i <- [0..255]],
+        memAddr = 0,
+        memIn = 0,
+        memOut = 0
     },
     cpu = CPU {
         pc = regOfVal (start p),
@@ -147,7 +144,7 @@ initState p = S {
 }
     where
         regOfVal :: a -> Reg a
-        regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False} -}
+        regOfVal a = Reg { dff = DFF{d = a, q = a}, we = False}
 
 tickRegs :: ST.State S ()
 tickRegs = 
@@ -200,7 +197,7 @@ decode = T $ do
     let insn = fromMaybe NOP (MachInsn <$> lookup opcode opcodes <*> pure operand)
 
     ST.put s {
-        cpu = c { ir = write insn (ir c) },
+        cpu = c { ir = write insn ireg },
         ram = r { memAddr = operand},
         prev = Just s,
         t = execute
@@ -274,55 +271,4 @@ store2 = T $ do
     s <- ST.get
     ST.put s { prev = Just s, t = fetch }
     return fetch
-
-{-
-test1 :: Transition S'
-test1 = T $ ST.get >>= \s -> ST.put S' {test = test s + 1} >> return test2
-
-test2 :: Transition S'
-test2 = T $ ST.get >>= \s -> ST.put S' {test = test s + 2} >> return test1
-
-inittest :: S'
-inittest = S' {
-    test = 0
-}
-
-
--- State S transition -> 
-transitionN :: Int -> Transition a -> ST.State a a
-transitionN 0 _ = ST.get
-transitionN n (T t) = t >>= \t' -> transitionN (n - 1) t'
-
-transitionWhile :: (a -> Bool) -> Transition a -> ST.State a a
-transitionWhile p (T t) = 
-    ST.get >>=
-        \s -> case p s of
-                True -> t >>= \t' -> transitionWhile p t'
-                False -> ST.get
-
---testState :: ST.State S' S'
---testState = stepN 3 test1
-
-
-stepN :: Int -> S -> S
-stepN i s = ST.evalState (transitionN i (t s)) s
-
-stepWhile :: (S -> Bool) -> S -> S
-stepWhile p s = ST.evalState (transitionWhile p (t s)) s
-
-
-
--- >>> ST.execState testState inittest
--- S {test = 4}
-
--- 1 3 4 6 7 9 10 12 13 15 16 18 19 21
-
---ttt :: ST.State S' S'
---ttt = stepWhile (\s -> test s < 20) test1
-
--- >>> ST.execState ttt inittest
--- S {test = 21}
-
-
--}
 

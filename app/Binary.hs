@@ -365,7 +365,6 @@ instance Ix (BinVal 8) where
             c x = fromIntegral (toInteger x)
         in
             inRange (b, c b') (c i)
-
     
 
 class (Binary a) => Debug a where
