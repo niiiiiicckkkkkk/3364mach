@@ -3,6 +3,8 @@ module Main where
 import Parser
 import Simulator
 
+import Loader
+
 import System.Environment
 import System.IO
 
@@ -31,7 +33,11 @@ loadSim file = do
         Just p -> simulate (initState p)
     -}
     let test = doParse (many asmP) asm
-    print test
+    --print test
+    case parseASM asm of
+        Just p -> do 
+            putStrLn "success"
+        Nothing -> putStrLn ":("
 
 main :: IO ()
 main = do
