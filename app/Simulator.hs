@@ -19,8 +19,6 @@ import Data.Array
 import Data.Proxy
 import Data.Maybe
 
-import Data.Foldable
-
 import qualified Control.Monad.State as ST
 
 class MachCmp f where
@@ -105,7 +103,15 @@ data Opcode =
 
 data MachInsn = MachInsn Opcode (BinVal 8) | NOP deriving Show
 
-newtype Transition a = T (ST.State a (Transition a))
+data Event = Fetch | Decode | Execute | Store2 deriving Eq
+
+fsa :: [(Event, ST.State S ())]
+fsa = [
+    (Fetch, fetch),
+    (Decode, decode),
+    (Execute, execute),
+    (Store2, store2)
+    ]
 
 data Program = Program {
     bindings :: [(MachAddr, MachWord)],
@@ -144,7 +150,7 @@ data S = S {
     ram :: RAM MachAddr Reg MachWord,
     cpu :: CPU Reg MachAddr MachWord,
     prev :: Maybe S,
-    t :: Transition S
+    next :: Event
 }
 
 instance Show S where
@@ -166,7 +172,7 @@ initState p = S {
         ir = regOfVal NOP
     },
     prev = Nothing,
-    t = fetch
+    next = Fetch
 }
     where
         regOfVal :: a -> Reg a
@@ -192,8 +198,8 @@ risingEdge =
         \s -> ST.put $ s { ram = tick (ram s) }
 
 
-fetch :: Transition S
-fetch = T $ do
+fetch :: ST.State S ()
+fetch = do
     risingEdge
     s <- ST.get
     r <- ST.gets ram
@@ -204,13 +210,12 @@ fetch = T $ do
         cpu = c { pc = write (idx + 1) (pc c)},
         ram = r { memAddr = idx },
         prev = Just s,
-        t = decode
+        next = Decode
     }
-    return decode
     
 
-decode :: Transition S
-decode = T $ do
+decode :: ST.State S ()
+decode = do
     risingEdge
     s <- ST.get
     c <- ST.gets cpu
@@ -226,9 +231,8 @@ decode = T $ do
         cpu = c { ir = write insn ireg },
         ram = r { memAddr = operand},
         prev = Just s,
-        t = execute
+        next = Execute
     }
-    return execute
 
     where
         opcodes :: [(BinVal 8, Opcode)]
@@ -246,8 +250,8 @@ decode = T $ do
                 ]
                 
 
-execute :: Transition S
-execute = T $ do
+execute :: ST.State S ()
+execute = do
     risingEdge
     s <- ST.get
     c <- ST.gets cpu
@@ -258,43 +262,62 @@ execute = T $ do
     acval <- ST.gets (read . ac . cpu)
     insn <- ST.gets (read . ir . cpu)
 
-    let s' = s { prev = Just s, t = fetch }
+    let s' = s { prev = Just s, next = Fetch }
 
     case insn of
-        NOP -> return fetch
+        NOP -> ST.put s'
         MachInsn Load _ ->
-            ST.put s' { cpu = c {ac = write mdata acreg} } >> return fetch
+            ST.put s' { cpu = c {ac = write mdata acreg} }
         MachInsn Store a -> do
             let r' = write acval $ r { memAddr = a }
-            ST.put s' { ram = r', t = store2}
-            return store2
+            ST.put s' { ram = r', next = Store2}
         MachInsn Jump a -> do
             ST.put s' { cpu = c {pc = write a pcreg } }
-            return fetch
         MachInsn JumpZ a ->
             if acval == 0 
-                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
-                else ST.put s' >> return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } }
+                else ST.put s'
         MachInsn JumpN a ->
             if acval < 0
-                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
-                else ST.put s' >> return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } }
+                else ST.put s'
         MachInsn JumpNZ a ->
             if acval /= 0
-                then ST.put s' { cpu = c {pc = write a pcreg } } >> return fetch
-                else ST.put s' >> return fetch
+                then ST.put s' { cpu = c {pc = write a pcreg } }
+                else ST.put s'
         MachInsn Add _ ->
-            ST.put s' { cpu = c {ac = write (mdata + acval) acreg} } >> return fetch
+            ST.put s' { cpu = c {ac = write (mdata + acval) acreg} }
         MachInsn Sub _ ->
-            ST.put s' { cpu = c {ac = write (mdata - acval) acreg} } >> return fetch
+            ST.put s' { cpu = c {ac = write (mdata - acval) acreg} }
         MachInsn Mul _ ->
-            ST.put s' { cpu = c {ac = write (mdata * acval) acreg} } >> return fetch
-        MachInsn Out _ -> return fetch
+            ST.put s' { cpu = c {ac = write (mdata * acval) acreg} }
+        MachInsn Out _ -> error "TODO"
 
-store2 :: Transition S
-store2 = T $ do 
+store2 :: ST.State S ()
+store2 = do 
     risingEdge
     s <- ST.get
-    ST.put s { prev = Just s, t = fetch }
-    return fetch
+    ST.put s { prev = Just s, next = Fetch }
+
+step :: ST.State S ()
+step = do
+    transition <- ST.gets next
+
+    case lookup transition fsa of
+        Nothing -> error "invalid fsa spec"
+        Just t -> t
+
+stepN :: Int -> ST.State S ()
+stepN 0 = pure ()
+stepN n = step >> stepN (n - 1)
+
+stepWhile :: (S -> Bool) -> ST.State S ()
+stepWhile p = do
+    s <- ST.get
+    ST.when (p s) (step >> stepWhile p)
+
+run :: ST.State S a -> S -> S
+run = ST.execState
+
+
 

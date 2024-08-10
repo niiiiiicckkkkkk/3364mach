@@ -28,7 +28,7 @@ opcodes = [
     ]
 
 memLayout :: Integral a => a -> [ASM] -> [(MachAddr, ASM)]
-memLayout sz asm = zip (fromIntegral <$> [sz - 1, sz - 2..0]) (reverse asm)
+memLayout sz asm = zip (fromIntegral <$> [sz - 1, sz - 2..0]) asm
 
 encodeASM :: [(Label, MachAddr)] -> ASM -> Maybe MachWord
 encodeASM labels (Insn _ op arg) =

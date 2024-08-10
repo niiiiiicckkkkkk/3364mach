@@ -14,8 +14,8 @@ simulate s = do
     cmd <- getLine
 
     case cmd of
-        "dump" -> print s
-        "step" -> undefined
+        "dump" -> print s >> simulate s
+        "step" -> simulate $ run (stepN 1) s 
         "run" -> putStrLn "TODO" >> simulate s
         "quit" -> return ()
         _ -> putStrLn ""
