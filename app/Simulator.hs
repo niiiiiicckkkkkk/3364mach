@@ -10,7 +10,17 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Simulator where
+module Simulator (
+    run,
+    stepWhile,
+    stepN,
+    MachAddr,
+    MachWord,
+    Opcode(..),
+    Program(..),
+    S,
+    initState
+) where
 
 import Prelude hiding (read)
 
@@ -21,6 +31,58 @@ import Data.Maybe
 
 import qualified Control.Monad.State as ST
 
+-- declares address and binary value types
+-- TODO: I want to make these generic types that implement Debug/Binary/Ix
+type MachWord = BinVal 16
+type MachAddr = BinVal 8
+
+data Opcode =
+              Load
+            | Store
+            | Jump
+            | JumpZ
+            | JumpN
+            | JumpNZ
+            | Add
+            | Sub
+            | Mul
+            | Out deriving (Eq, Show)
+
+data MachInsn = MachInsn Opcode (BinVal 8) | NOP deriving Show
+
+-- states for the underlying FSA
+data Event = Fetch | Decode | Execute | Store2 deriving Eq
+
+-- expected Loader output required to initialize the State
+data Program = Program {
+    bindings :: [(MachAddr, MachWord)],
+    start :: MachAddr,
+    end :: MachAddr
+}
+
+-- TODO :   1. use or write some kind of pretty printing module
+--          2. allow more detailed output (ex: display both input and output of regs)
+--          3. allow selection of only memory or only PC reg (more control)
+instance (Debug a, Debug w, MachCmp mu) => Show (CPU mu a w) where
+    show :: CPU mu a w -> String
+    show cpu = "PC: " ++ showNumU (read $ pc cpu) ++ "\n" ++
+                "AC: " ++ showNumS (read $ ac cpu) ++ "\n" ++
+                "IR: " ++ show (read $ ir cpu) ++ "\n" 
+
+instance (Debug a, Debug w, MachCmp mu, Ix a) => Show (RAM a mu w) where
+    show :: RAM a mu w -> String
+    show r = "ADDR: " ++ showNumU (memAddr r) ++ "\n" ++
+            "INPUT: " ++ showNumS (memIn r) ++ "\n" ++
+            "OUTPUT: " ++ showNumS (memOut r) ++ "\n" ++
+            "MEMORY: " ++ "\n" ++ memcontents ++ "\n"
+        where
+            memcontents :: String
+            memcontents = foldMap display $ assocs (mem r)
+
+            display :: (Debug a, MachCmp mu, Debug i) => (i, mu a) -> String
+            display (i, m) = "\t" ++ showNumU i ++ ":\t" ++ showNumS (read m) ++ "\n"
+
+-- unify clocked components with some kind of IO
 class MachCmp f where
     tick :: f a -> f a
     write :: a -> f a -> f a
@@ -38,7 +100,6 @@ instance MachCmp DFF where
     write :: a -> DFF a -> DFF a
     write a dff' = dff' {d = a}
 
-
 data Reg a = Reg {
     dff :: DFF a,
     we :: Bool
@@ -55,10 +116,6 @@ instance MachCmp Reg where
 
     write :: a -> Reg a -> Reg a
     write a r = r {we = True, dff = write a (dff r)}
-
-
-type MachWord = BinVal 16
-type MachAddr = BinVal 8
 
 data RAM addr munit word = RAM { 
     mem :: Array addr (munit word),
@@ -86,24 +143,15 @@ instance (Ix a, MachCmp m) => MachCmp (RAM a m) where
         in
             r { mem = mem'}
 
+-- change the address select line for the RAM
 select :: a -> RAM a mu w -> RAM a mu w
 select a r = r { memAddr = a }
 
-data Opcode =
-              Load
-            | Store
-            | Jump
-            | JumpZ
-            | JumpN
-            | JumpNZ
-            | Add
-            | Sub
-            | Mul
-            | Out deriving (Eq, Show)
-
-data MachInsn = MachInsn Opcode (BinVal 8) | NOP deriving Show
-
-data Event = Fetch | Decode | Execute | Store2 deriving Eq
+data CPU munit addr word = CPU {
+    pc :: munit addr,
+    ac :: munit word,
+    ir :: munit MachInsn
+}
 
 fsa :: [(Event, ST.State S ())]
 fsa = [
@@ -113,39 +161,7 @@ fsa = [
     (Store2, store2)
     ]
 
-data Program = Program {
-    bindings :: [(MachAddr, MachWord)],
-    start :: MachAddr,
-    end :: MachAddr
-} deriving Show
-
-data CPU munit addr word = CPU {
-    pc :: munit addr,
-    ac :: munit word,
-    ir :: munit MachInsn
-}
-
-instance (Debug a, Debug w, MachCmp mu) => Show (CPU mu a w) where
-    show :: CPU mu a w -> String
-    show cpu = "PC: " ++ showNumU (read $ pc cpu) ++ "\n" ++
-                "AC: " ++ showNumS (read $ ac cpu) ++ "\n" ++
-                "IR: " ++ show (read $ ir cpu) ++ "\n" 
-
-instance (Debug a, Debug w, MachCmp mu, Ix a) => Show (RAM a mu w) where
-    show :: RAM a mu w -> String
-    show r = "ADDR: " ++ showNumU (memAddr r) ++ "\n" ++
-            "INPUT: " ++ showNumS (memIn r) ++ "\n" ++
-            "OUTPUT: " ++ showNumS (memOut r) ++ "\n" ++
-            "MEMORY: " ++ "\n" ++ memcontents ++ "\n"
-        where
-            memcontents :: String
-            memcontents = foldMap display $ assocs (mem r)
-
-            display :: (Debug a, MachCmp mu, Debug i) => (i, mu a) -> String
-            display (i, m) = "\t" ++ showNumU i ++ ":\t" ++ showNumS (read m) ++ "\n"
-
-
-
+-- S ("state") threaded through the State Monad
 data S = S {
     ram :: RAM MachAddr Reg MachWord,
     cpu :: CPU Reg MachAddr MachWord,
@@ -157,7 +173,7 @@ instance Show S where
     show :: S -> String
     show s = show (cpu s) ++ show (ram s)
 
-
+-- loader output to initial state
 initState :: Program -> S
 initState p = S {
     ram = RAM {
@@ -192,12 +208,14 @@ tickRegs =
         ir = tick (ir c)
     }
 
+-- simulate a rising clock edge by calling "tick" on clocked components
 risingEdge :: ST.State S ()
 risingEdge = 
     tickRegs >> ST.get >>=
         \s -> ST.put $ s { ram = tick (ram s) }
 
-
+-- set PC reg input to PC + 1
+-- set mem address select line to PC
 fetch :: ST.State S ()
 fetch = do
     risingEdge
@@ -208,12 +226,13 @@ fetch = do
 
     ST.put s {
         cpu = c { pc = write (idx + 1) (pc c)},
-        ram = r { memAddr = idx },
+        ram = select idx r,
         prev = Just s,
         next = Decode
     }
     
-
+-- decode output[mem] to an insn
+-- set IR input to decoded insn
 decode :: ST.State S ()
 decode = do
     risingEdge
@@ -249,7 +268,10 @@ decode = do
                         (9, JumpNZ)
                 ]
                 
-
+-- enumerate the opcodes and update state accordingly
+-- control : sets PC input
+-- arithmetic : updates AC reg input
+-- mem : sets memory input line
 execute :: ST.State S ()
 execute = do
     risingEdge
@@ -293,6 +315,7 @@ execute = do
             ST.put s' { cpu = c {ac = write (mdata * acval) acreg} }
         MachInsn Out _ -> error "TODO"
 
+-- an extra state that allows writes to flow through
 store2 :: ST.State S ()
 store2 = do 
     risingEdge
@@ -302,7 +325,7 @@ store2 = do
 step :: ST.State S ()
 step = do
     transition <- ST.gets next
-
+    -- TODO: compile time check for valid fsa allows unsafe lookups at runtime
     case lookup transition fsa of
         Nothing -> error "invalid fsa spec"
         Just t -> t

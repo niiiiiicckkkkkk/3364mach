@@ -1,18 +1,13 @@
 {-# LANGUAGE InstanceSigs #-}
 
-{-
-module Parser(
-    parseASM
-) where -}
-module Parser where
+module Parser (parseASM) where
 
 import Control.Applicative
 import Data.Char
-
 import Loader
 import Simulator
 
-
+-- TODO: add error messages during loading by changing Maybe to Either
 newtype Parser a = P {doParse :: String -> Maybe (a, String)}
 
 instance Functor Parser where
@@ -42,7 +37,6 @@ instance Alternative Parser where
             firstJust (Just x) _ = Just x
             firstJust Nothing y = y
 
-
 get :: Parser Char
 get = P $ \s ->
         case s of
@@ -66,6 +60,7 @@ alphaChar = filterP isAlpha get
 digitChar :: Parser Char
 digitChar = filterP isDigit get
 
+-- valid label characters
 identifierChar :: Parser Char
 identifierChar = alphaChar <|> digitChar <|> char '_'
 
@@ -118,37 +113,29 @@ opP =
     <|> stringP "mul" *> pure Mul
     <|> stringP "out" *> pure Out
 
--- p ( m a -> p a) -> p (m a) -> p a
-
 maybeP :: Parser (Maybe a) -> Parser a
 maybeP p = P $ \s -> doParse p s >>=
                      \(a, s') -> a >>=
                         \a -> return (a, s')
 
+-- parsing operands (labels, hex or numeric values)
 operandP :: Parser Operand
 operandP = L <$> labelP <|> B . fromIntegral <$> numP
 
+-- parses ASM directives throwing out comments (lines starting with '#')
 asmP :: Parser ASM
 asmP = many commentP *> (wsP insnP <|> wsP defP)
     where
         insnP = Insn <$> wsP (optional (labelP <* char ':')) <*> wsP opP <*> wsP operandP
         defP = Def <$> wsP (labelP <* char ':') <* wsP (stringP ".data") <*> wsP numP
 
+-- lift loading into a parser
 programP :: Parser Program
 programP = maybeP (loader <$> many asmP)
 
+-- run the program parser on some string input
 parseASM :: String -> Maybe Program
 parseASM = fmap fst . doParse programP
-
-
-test :: String
-test = "#\n        # This block is here to delay O(1 second) after displaying each new\n        # prime number, so that you can see each number display.\n        #\nload    Jdelay  #"
-
--- >>> doParse (many asmP) test
--- Just ([Insn Nothing Load (L "Jdelay")],"#")
-
--- >>> doParse (asmP) "load     jdelay    #"
--- Just (Insn Nothing Load (L "jdelay"),"#")
 
 
 

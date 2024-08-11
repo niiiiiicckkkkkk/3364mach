@@ -2,12 +2,8 @@ module Main where
 
 import Parser
 import Simulator
-
-import Loader
-
 import System.Environment
 import System.IO
-
 
 simulate :: S -> IO ()
 simulate s = do
@@ -19,7 +15,6 @@ simulate s = do
         "run" -> putStrLn "TODO" >> simulate s
         "quit" -> return ()
         _ -> putStrLn ""
-
 
 loadSim :: String -> IO ()
 loadSim file = do
