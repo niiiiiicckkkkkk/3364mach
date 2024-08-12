@@ -48,7 +48,7 @@ for anyone interested  :)
 
 Of course there are many technical reasons I find Haskell compelling. The type system is great, and as software gets larger and more complicated, having an additional (but sound) set of eyes on the entirety of a program's specification through type declarations is an invaluable tool. I've also found functional paradigms promote the greater use of generics and decomposition of repeated patterns into functions. This makes programs modular and (in my opinion) far easier to refactor.
 
-A friend once jokingly said "oh no he's joined the Haskell cult" but I truly believe Haskell is under appreciated. However, I ultimately write Haskell because it's fun. Coding in any language that supports a functional paradigm is so expressive I feel limited in my approach to a problem only by my imagination. The ability to think through 100 and then try 100 more approaches to a problem in order to find a great one excites me and Haskell gives me the tools to do just that.
+A friend once jokingly said "oh no he's joined the Haskell cult" but I truly believe Haskell is under appreciated. However, I ultimately write Haskell because it's fun. Coding in any language that supports a functional paradigm is so expressive I feel limited in my approach to a problem only by my imagination. The ability to think through 100 and then try 100 more approaches to a problem in order to find a great one excites me and Haskell gives me the tools to do that.
 
 ## Parsing with Applicative Functors
 
@@ -71,7 +71,7 @@ insnP = Insn <$> wsP (optional labelP) <*> opP <*> operandP
 		<$> :: (a -> b) -> f a -> f b
 		<*> :: f (a -> b) -> f a -> f b
 ```
-In this example I've combined 3 different parsers for labels, opcodes and operands into one for instructions using fmap (<$>) and ap (<*>). Loosely speaking, fmap "lifts" a function over a structure, applying the function to the enclosed value. Ap describes some method of combining a function contained in Applicative structure with a value contained in Applicative structure which necessitates some merging together of the enclosing structures andddd I'm definitely not qualified to explain these ideas. But what I can say is that these are two higher order functions that allow me to use functions and change the way a parser behaves. So instead of writing a parser generator rule for instructions, I've written 4 functions each of which can (and is) reused elsewhere in the program but combined through lawful type class instances to parse entire instructions.
+In this example I've combined 3 different parsers for labels, opcodes and operands into one for instructions using fmap (<$>) and ap (<*>). Loosely speaking, fmap "lifts" a function over a structure, applying the function to the enclosed value. Ap describes some method of combining a function contained in Applicative structure with a value contained in Applicative structure which necessitates some merging together of the enclosing structures. Without writing another page on each type class, what I can say is that these are two higher order functions allowed me to change the way a parser behaves. So instead of writing a parser generator rule for instructions, I've written 4 functions each of which can (and is) reused elsewhere in the program but combined through lawful type class instances to parse entire instructions.
 
 ## Type Level Safety for Binary Conversion
 
